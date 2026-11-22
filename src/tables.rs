@@ -1,8 +1,8 @@
 //! Small side inputs: manifest, products, campaigns, and the exact string map used for them.
 
 use crate::csv::{for_each_line, split};
-use crate::input::{header_end, map_file};
-use crate::ts::parse_ts;
+use crate::input::{first_row, open_view};
+use crate::ts::epoch_ms;
 use crate::util::{find_byte, hash128, WEEK_MS};
 use std::path::Path;
 
@@ -86,8 +86,8 @@ pub fn read_manifest(dir: &Path) -> Result<Window, String> {
     let text = std::fs::read(dir.join("manifest.json")).map_err(|e| format!("manifest.json: {e}"))?;
     let ws = json_str_field(&text, "window_start").ok_or("manifest: no window_start")?;
     let we = json_str_field(&text, "window_end").ok_or("manifest: no window_end")?;
-    let ws = parse_ts(ws).ok_or("manifest: bad window_start")?;
-    let we = parse_ts(we).ok_or("manifest: bad window_end")?;
+    let ws = epoch_ms(ws).ok_or("manifest: bad window_start")?;
+    let we = epoch_ms(we).ok_or("manifest: bad window_end")?;
     Ok(Window { ws, we, cws: ws - WEEK_MS })
 }
 
@@ -100,10 +100,21 @@ pub struct Products {
     pub cat_of: Vec<u32>,
 }
 
+impl Products {
+    /// Category rank of a product; products missing from products.csv are `unknown`.
+    #[inline]
+    pub fn category(&self, product: &[u8]) -> u32 {
+        match self.map.get(product) {
+            Some(i) => self.cat_of[i as usize],
+            None => self.unknown,
+        }
+    }
+}
+
 pub fn read_products(dir: &Path) -> Result<Products, String> {
-    let data = map_file(&dir.join("products.csv")).map_err(|e| format!("products.csv: {e}"))?;
+    let data = open_view(&dir.join("products.csv")).map_err(|e| format!("products.csv: {e}"))?;
     let mut rows: Vec<(&'static [u8], &'static [u8])> = Vec::new();
-    for_each_line(data, header_end(data), data.len(), |l| {
+    for_each_line(data, first_row(data), data.len(), |l| {
         let mut f = [(0, 0); 2];
         if split::<2>(l, &mut f) {
             rows.push((&l[f[0].0..f[0].1], &l[f[1].0..f[1].1]));
@@ -135,12 +146,17 @@ impl Campaigns {
     pub fn organic(&self) -> u32 {
         (self.rows.len() - 1) as u32
     }
+    /// Index of a campaign listed in campaigns.csv.
+    #[inline]
+    pub fn find(&self, id: &[u8]) -> Option<u32> {
+        self.map.get(id)
+    }
 }
 
 pub fn read_campaigns(dir: &Path) -> Result<Campaigns, String> {
-    let data = map_file(&dir.join("campaigns.csv")).map_err(|e| format!("campaigns.csv: {e}"))?;
+    let data = open_view(&dir.join("campaigns.csv")).map_err(|e| format!("campaigns.csv: {e}"))?;
     let mut raw: Vec<(&'static [u8], &'static [u8])> = Vec::new();
-    for_each_line(data, header_end(data), data.len(), |l| {
+    for_each_line(data, first_row(data), data.len(), |l| {
         let mut f = [(0, 0); 2];
         if split::<2>(l, &mut f) {
             raw.push((&l[f[0].0..f[0].1], &l[f[1].0..f[1].1]));
